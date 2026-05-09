@@ -155,7 +155,7 @@ app.get('/pair', async (req, res) => {
         res.json({ code });
     } catch (err) {
         console.error('Erro ao gerar código de pareamento:', err);
-        res.status(500).json({ error: 'Erro ao gerar código de pareamento' });
+        res.status(500).json({ error: 'Erro ao gerar código de pareamento: ' + err.message });
     }
 });
 
