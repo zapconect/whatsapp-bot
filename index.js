@@ -147,6 +147,9 @@ app.get('/pair', async (req, res) => {
 
     const instance = await getOrCreateInstance(instanceName);
 
+    // Espera 3 segundos para a conexão estabilizar com os servidores do WhatsApp
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
     try {
         const cleanPhone = phone.replace(/\D/g, '');
         const fullPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
