@@ -109,13 +109,26 @@ app.get('/pair', async (req, res) => {
         return res.status(400).json({ error: 'Número de telefone é obrigatório' });
     }
 
+    // FORÇA O RESET DA INSTÂNCIA PARA GERAR UM CÓDIGO NOVO
+    const existing = instances.get(instanceName);
+    if (existing) {
+        if (existing.sock) {
+            try { existing.sock.end(); } catch(e) {}
+        }
+        instances.delete(instanceName);
+    }
+
+    // Deleta a pasta de autenticação para garantir que comece do zero
+    const authFolder = `auth_info_${instanceName}`;
+    try {
+        fs.rmSync(authFolder, { recursive: true, force: true });
+    } catch(e) {
+        console.log(`[DEBUG] Erro ao deletar pasta ${authFolder}:`, e.message);
+    }
+
     const instance = await getOrCreateInstance(instanceName);
 
     try {
-        if (instance.status === 'connected') {
-            return res.json({ status: 'connected', message: 'Já conectado' });
-        }
-
         const cleanPhone = phone.replace(/\D/g, '');
         const fullPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
         
