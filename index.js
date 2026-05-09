@@ -91,6 +91,25 @@ app.get('/status', async (req, res) => {
 
 app.get('/qr', async (req, res) => {
     const instanceName = req.query.instance || 'default';
+    const force = req.query.force === 'true';
+    
+    if (force) {
+        const existing = instances.get(instanceName);
+        if (existing) {
+            if (existing.sock) {
+                try { existing.sock.end(); } catch(e) {}
+            }
+            instances.delete(instanceName);
+        }
+        
+        const authFolder = `auth_info_${instanceName}`;
+        try {
+            fs.rmSync(authFolder, { recursive: true, force: true });
+        } catch(e) {
+            console.log(`[DEBUG] Erro ao deletar pasta ${authFolder}:`, e.message);
+        }
+    }
+
     const instance = await getOrCreateInstance(instanceName);
     
     if (instance.qr) {
