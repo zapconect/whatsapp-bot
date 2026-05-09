@@ -101,6 +101,32 @@ app.get('/qr', async (req, res) => {
     }
 });
 
+app.get('/pair', async (req, res) => {
+    const instanceName = req.query.instance || 'default';
+    const phone = req.query.phone;
+    
+    if (!phone) {
+        return res.status(400).json({ error: 'Número de telefone é obrigatório' });
+    }
+
+    const instance = await getOrCreateInstance(instanceName);
+
+    try {
+        if (instance.status === 'connected') {
+            return res.json({ status: 'connected', message: 'Já conectado' });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '');
+        const fullPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+        
+        const code = await instance.sock.requestPairingCode(fullPhone);
+        res.json({ code });
+    } catch (err) {
+        console.error('Erro ao gerar código de pareamento:', err);
+        res.status(500).json({ error: 'Erro ao gerar código de pareamento' });
+    }
+});
+
 app.post('/send', async (req, res) => {
     try {
         const { number, text, instance: instanceName } = req.body;
