@@ -148,42 +148,49 @@ app.get('/pair', async (req, res) => {
         auth: state,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
-        printQRInTerminal: false,
-        mobile: false
+        printQRInTerminal: false
     });
 
-    const instanceData = { sock, status: 'disconnected', qr: null, saveCreds };
+    const instanceData = { sock, status: 'disconnected', qr: null, saveCreds, pairingMode: true };
     instances.set(instanceName, instanceData);
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             instanceData.status = 'disconnected';
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
+            const code = lastDisconnect?.error?.output?.statusCode;
+            const loggedOut = code === DisconnectReason.loggedOut;
+            
+            // Se ainda está em modo de pareamento, aguarda o usuário digitar o código
+            // antes de reconectar — não volta para modo QR automaticamente
+            if (!instanceData.pairingMode && !loggedOut) {
                 setTimeout(() => { instances.delete(instanceName); getOrCreateInstance(instanceName); }, 5000);
+            } else if (!instanceData.pairingMode && loggedOut) {
+                instances.delete(instanceName);
             }
         } else if (connection === 'open') {
             instanceData.status = 'connected';
             instanceData.qr = null;
+            instanceData.pairingMode = false; // pareamento confirmado!
             console.log(`✅ WhatsApp Conectado via código para [${instanceName}]!`);
         }
     });
     sock.ev.on('creds.update', saveCreds);
 
     try {
-        // Aguarda 2s para o WebSocket se conectar aos servidores do WA
-        // mas antes do WA enviar o desafio de QR (~3-5s após conexão)
+        // Aguarda WebSocket conectar aos servidores WA mas antes do QR chegar
         await new Promise(r => setTimeout(r, 2000));
         const code = await sock.requestPairingCode(fullPhone);
         console.log(`[PAIR] Código: ${code} para ${fullPhone}`);
+        // Após gerar o código, desativa pairingMode para permitir reconexão após confirmação
+        instanceData.pairingMode = false;
         res.json({ code });
     } catch (err) {
         console.error('[PAIR] Erro:', err.message);
+        instanceData.pairingMode = false;
         res.status(500).json({ error: err.message });
     }
 });
-
 
 app.post('/send', async (req, res) => {
     try {
@@ -210,7 +217,8 @@ app.post('/send', async (req, res) => {
 
 const PORT = 3003;
 app.listen(PORT, async () => {
-    console.log(`🚀 API do Bot Multi-Instâncias rodando em http://localhost:${PORT}`);
+    const url = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    console.log(`🚀 API do Bot rodando em ${url}`);
     
     // Auto-carrega instâncias existentes que estão em pastas
     try {
