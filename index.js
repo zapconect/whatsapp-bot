@@ -16,6 +16,52 @@ app.use(express.json()); // Middleware para ler JSON no corpo da requisição
 
 const instances = new Map(); // instanceName -> { sock, status, qr, saveCreds }
 
+// --- SISTEMA DE AGENDAMENTO ---
+let scheduledMessages = [];
+try {
+    if (fs.existsSync('schedules.json')) {
+        scheduledMessages = JSON.parse(fs.readFileSync('schedules.json', 'utf-8'));
+        console.log(`[SCHEDULE] ${scheduledMessages.length} agendamentos carregados.`);
+    }
+} catch (e) {
+    console.error('Erro ao carregar schedules.json:', e);
+}
+
+function saveSchedules() {
+    try {
+        fs.writeFileSync('schedules.json', JSON.stringify(scheduledMessages, null, 2));
+    } catch (e) {
+        console.error('Erro ao salvar schedules.json:', e);
+    }
+}
+
+// Verifica agendamentos a cada 1 minuto
+setInterval(async () => {
+    const now = Date.now();
+    let changed = false;
+    
+    for (let i = scheduledMessages.length - 1; i >= 0; i--) {
+        const msg = scheduledMessages[i];
+        if (msg.sendAt <= now) {
+            try {
+                const instance = await getOrCreateInstance(msg.instance || 'default');
+                if (instance.status === 'connected' && instance.sock) {
+                    const jid = msg.number.includes('@s.whatsapp.net') ? msg.number : `${msg.number}@s.whatsapp.net`;
+                    await instance.sock.sendMessage(jid, { text: msg.text });
+                    console.log(`[SCHEDULE] Mensagem enviada para ${msg.number}`);
+                }
+            } catch (err) {
+                console.error(`[SCHEDULE] Erro ao enviar para ${msg.number}:`, err.message);
+            }
+            scheduledMessages.splice(i, 1);
+            changed = true;
+        }
+    }
+    
+    if (changed) saveSchedules();
+}, 60000);
+// -------------------------------
+
 async function getOrCreateInstance(instanceName) {
     // Normaliza o nome da instância
     const name = instanceName || 'default';
@@ -211,6 +257,28 @@ app.post('/send', async (req, res) => {
         res.json({ success: true, messageId: sentMsg?.key?.id });
     } catch (err) {
         console.error('Erro ao enviar mensagem:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/schedule', async (req, res) => {
+    try {
+        const { number, text, sendAt, instance } = req.body;
+        if (!number || !text || !sendAt) {
+            return res.status(400).json({ success: false, error: 'Número, texto e sendAt (timestamp) são obrigatórios' });
+        }
+        
+        scheduledMessages.push({
+            number,
+            text,
+            sendAt: parseInt(sendAt),
+            instance: instance || 'default'
+        });
+        
+        saveSchedules();
+        res.json({ success: true, message: 'Mensagem agendada com sucesso' });
+    } catch (err) {
+        console.error('Erro ao agendar mensagem:', err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
