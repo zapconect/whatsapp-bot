@@ -123,44 +123,67 @@ app.get('/qr', async (req, res) => {
 app.get('/pair', async (req, res) => {
     const instanceName = req.query.instance || 'default';
     const phone = req.query.phone;
-    
+
     if (!phone) {
         return res.status(400).json({ error: 'Número de telefone é obrigatório' });
     }
 
-    // FORÇA O RESET DA INSTÂNCIA PARA GERAR UM CÓDIGO NOVO
+    const cleanPhone = phone.replace(/\D/g, '');
+    const fullPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
+
+    // Derruba instância existente e apaga auth para começar do zero
     const existing = instances.get(instanceName);
     if (existing) {
-        if (existing.sock) {
-            try { existing.sock.end(); } catch(e) {}
-        }
+        if (existing.sock) { try { existing.sock.end(); } catch(e) {} }
         instances.delete(instanceName);
     }
-
-    // Deleta a pasta de autenticação para garantir que comece do zero
     const authFolder = `auth_info_${instanceName}`;
+    try { fs.rmSync(authFolder, { recursive: true, force: true }); } catch(e) {}
+
+    // Cria socket em modo código (sem QR)
+    console.log(`[PAIR] Criando socket em modo código para ${fullPhone}`);
+    const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+    const { version } = await fetchLatestBaileysVersion();
+
+    const sock = makeWASocket({
+        version,
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        browser: Browsers.macOS('Desktop'),
+        printQRInTerminal: false
+    });
+
+    const instanceData = { sock, status: 'disconnected', qr: null, saveCreds };
+    instances.set(instanceName, instanceData);
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            instanceData.status = 'disconnected';
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                setTimeout(() => { instances.delete(instanceName); getOrCreateInstance(instanceName); }, 5000);
+            }
+        } else if (connection === 'open') {
+            instanceData.status = 'connected';
+            instanceData.qr = null;
+            console.log(`✅ WhatsApp Conectado via código para [${instanceName}]!`);
+        }
+    });
+    sock.ev.on('creds.update', saveCreds);
+
+    // Aguarda o socket registrar com os servidores (necessário antes do requestPairingCode)
+    await new Promise(resolve => setTimeout(resolve, 4000));
+
     try {
-        fs.rmSync(authFolder, { recursive: true, force: true });
-    } catch(e) {
-        console.log(`[DEBUG] Erro ao deletar pasta ${authFolder}:`, e.message);
-    }
-
-    const instance = await getOrCreateInstance(instanceName);
-
-    // Espera 3 segundos para a conexão estabilizar com os servidores do WhatsApp
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    try {
-        const cleanPhone = phone.replace(/\D/g, '');
-        const fullPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
-        
-        const code = await instance.sock.requestPairingCode(fullPhone);
+        const code = await sock.requestPairingCode(fullPhone);
         res.json({ code });
     } catch (err) {
         console.error('Erro ao gerar código de pareamento:', err);
-        res.status(500).json({ error: 'Erro ao gerar código de pareamento: ' + err.message });
+        res.status(500).json({ error: 'Erro ao gerar código: ' + err.message });
     }
 });
+
 
 app.post('/send', async (req, res) => {
     try {
