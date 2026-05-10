@@ -140,49 +140,67 @@ app.get('/pair', async (req, res) => {
     const authFolder = `auth_info_${instanceName}`;
     try { fs.rmSync(authFolder, { recursive: true, force: true }); } catch(e) {}
 
-    // Cria socket em modo código (sem QR)
     console.log(`[PAIR] Criando socket em modo código para ${fullPhone}`);
     const { state, saveCreds } = await useMultiFileAuthState(authFolder);
     const { version } = await fetchLatestBaileysVersion();
 
-    const sock = makeWASocket({
-        version,
-        auth: state,
-        logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'),
-        printQRInTerminal: false
-    });
+    return new Promise((resolve) => {
+        const sock = makeWASocket({
+            version,
+            auth: state,
+            logger: pino({ level: 'silent' }),
+            browser: Browsers.macOS('Desktop'),
+            printQRInTerminal: false
+        });
 
-    const instanceData = { sock, status: 'disconnected', qr: null, saveCreds };
-    instances.set(instanceName, instanceData);
+        const instanceData = { sock, status: 'disconnected', qr: null, saveCreds };
+        instances.set(instanceName, instanceData);
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-        if (connection === 'close') {
-            instanceData.status = 'disconnected';
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                setTimeout(() => { instances.delete(instanceName); getOrCreateInstance(instanceName); }, 5000);
+        let codeSent = false;
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+
+            // Assim que o socket conectar aos servidores (antes do QR), pede o código
+            if (!codeSent && sock.authState?.creds && !sock.authState.creds.registered) {
+                codeSent = true;
+                try {
+                    // Pequena pausa para estabilizar o handshake TCP
+                    await new Promise(r => setTimeout(r, 1500));
+                    const code = await sock.requestPairingCode(fullPhone);
+                    console.log(`[PAIR] Código gerado para [${instanceName}]: ${code}`);
+                    resolve(res.json({ code }));
+                } catch (err) {
+                    console.error('[PAIR] Erro ao gerar código:', err.message);
+                    resolve(res.status(500).json({ error: 'Erro ao gerar código: ' + err.message }));
+                }
             }
-        } else if (connection === 'open') {
-            instanceData.status = 'connected';
-            instanceData.qr = null;
-            console.log(`✅ WhatsApp Conectado via código para [${instanceName}]!`);
-        }
+
+            if (connection === 'close') {
+                instanceData.status = 'disconnected';
+                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+                if (shouldReconnect) {
+                    setTimeout(() => { instances.delete(instanceName); getOrCreateInstance(instanceName); }, 5000);
+                }
+            } else if (connection === 'open') {
+                instanceData.status = 'connected';
+                instanceData.qr = null;
+                console.log(`✅ WhatsApp Conectado via código para [${instanceName}]!`);
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        // Timeout de segurança: se demorar mais de 15s, responde com erro
+        setTimeout(() => {
+            if (!codeSent) {
+                codeSent = true;
+                resolve(res.status(500).json({ error: 'Timeout: não foi possível gerar o código a tempo.' }));
+            }
+        }, 15000);
     });
-    sock.ev.on('creds.update', saveCreds);
-
-    // Aguarda o socket registrar com os servidores (necessário antes do requestPairingCode)
-    await new Promise(resolve => setTimeout(resolve, 4000));
-
-    try {
-        const code = await sock.requestPairingCode(fullPhone);
-        res.json({ code });
-    } catch (err) {
-        console.error('Erro ao gerar código de pareamento:', err);
-        res.status(500).json({ error: 'Erro ao gerar código: ' + err.message });
-    }
 });
+
 
 
 app.post('/send', async (req, res) => {
