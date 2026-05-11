@@ -132,7 +132,8 @@ async function getOrCreateInstance(instanceName) {
 app.get('/status', async (req, res) => {
     const instanceName = req.query.instance || 'default';
     const instance = await getOrCreateInstance(instanceName);
-    res.json({ status: instance.status, hasQr: !!instance.qr });
+    const phone = instance.sock?.user?.id ? instance.sock.user.id.split(':')[0].split('@')[0] : null;
+    res.json({ status: instance.status, hasQr: !!instance.qr, phone: phone });
 });
 
 app.get('/qr', async (req, res) => {
